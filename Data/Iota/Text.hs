@@ -5,7 +5,7 @@ module Data.Iota.Text
       -- Data Types
     , IotaResult
       -- Operators
-    , (.>), (+>)
+    , (.>), (+>), (|>)
       -- Functions
     , runIota, feedIota, closeIota, iota
     -- Combinators
@@ -14,7 +14,7 @@ module Data.Iota.Text
     , prependI, writeI, appendI
     , substI
     , embedInner, feedInner, closeInner
-    , endI, failI
+    , endI, otherwiseI
     , IotaEndState(..)
     -- Exports
     , (<|>)
@@ -25,46 +25,24 @@ import Control.Applicative
 import Control.Arrow
 import Control.Monad.Writer.Strict
 import Data.Attoparsec.Text
-import Data.Monoid
-import Data.Text
+import Data.Text (Text)
+import qualified Data.Text as T
 
 import Blaze.ByteString.Builder
 import Blaze.ByteString.Builder.Char.Utf8
 
-import Debug.Trace
-
 -- Iota is an incremental, buffered parser library
-
--- LIBRARY CODE
 
 instance Show Builder where
   show = show . toByteString
 
 class (Show a) => Iota a where
-  parseIota :: a -> IotaParser a
-  closeState :: a -> Text -> Builder
+  parseIota :: a -> Parser (IotaEndState, Writer Builder a)
 
-  defaultState :: a
+data IotaEndState = Terminal | Reparse
+  deriving (Show)
 
-type IotaWriter a = Writer Builder a
-type IotaParser a = Parser (IotaWriter a)
-
-type IotaState a  = (a, Text)
-
-data IotaResult a = Awaiting !Builder !(IotaState a, Text -> Result (a, Builder))
-                  | Complete !Builder
-
-data IotaEndState = Continue | Reparse | End
-
-getBuffer :: IotaResult a -> Builder
-getBuffer (Awaiting b _) = b
-getBuffer (Complete b)   = b
-
-instance Show a => Show (IotaResult a) where
-  show (Awaiting b ((a, b1), f)) = "Awaiting " <> show b -- <> " (" <> show a <> ", " <> show b1 <> ")"
-  show (Complete b) = "Complete " <> show b
-
--- Combinators
+type IotaResult a = (Builder, a, [Text])
 
 emitI :: s -> Text -> Writer Builder s
 emitI s t = tell (fromText t) >> return s
@@ -83,7 +61,7 @@ emitAndBufferI s t = tell (fromText t) >> return (s t)
 {-# INLINE emitAndBufferI #-}
 
 ignoreI :: s -> Text -> Writer Builder s
-ignoreI s t = return s
+ignoreI s _ = return s
 {-# INLINE ignoreI #-}
 
 prependI :: Builder -> s -> Text -> Writer Builder s
@@ -91,113 +69,90 @@ prependI b s t = tell (b <> fromText t) >> return s
 {-# INLINE prependI #-}
 
 writeI :: Text -> s -> Text -> Writer Builder s
-writeI b s t = tell (fromText b) >> return s
+writeI b s _ = tell (fromText b) >> return s
 {-# INLINE writeI #-}
 
 appendI :: Text -> s -> Text -> Writer Builder s
 appendI b s t = tell (fromText (t <> b)) >> return s
 {-# INLINE appendI #-}
 
-substI :: Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
+substI :: (Show s) => Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 substI c f = const (f c)
 {-# INLINE substI #-}
 
 embedInner :: (Iota b) => b -> (IotaResult b -> s) -> Text -> Writer Builder s
-embedInner i s t = tell (getBuffer p) >> return (s p)
-  where p = runIota i t
+embedInner i s t = tell o >> return (s (flush, a, b))
+  where (o, a, b) = runIota i t
 {-# INLINE embedInner #-}
 
 feedInner :: (Iota b) => IotaResult b -> (IotaResult b -> s) -> Text -> Writer Builder s
-feedInner i s t = tell (getBuffer p) >> return (s p)
-  where p = feedIota i t
+feedInner i s t = tell o >> return (s (flush, a, b))
+  where (o, a, b) = feedIota i t
 {-# INLINE feedInner #-}
 
 closeInner :: (Iota b) => IotaResult b -> s -> Text -> Writer Builder s
-closeInner i s t = tell b >> tell (fromText t) >> return s
-  where b = closeIota $ feedIota i ""
+closeInner i s t = tell o >> tell (fromText t) >> return s
+  where (o, _) = closeIota i
 {-# INLINE closeInner #-}
 
-(+>) :: Parser Text -> (Text -> Writer Builder s) -> IotaParser s
-(+>) t p = (fmap p) t
+(+>) :: Parser Text -> (Text -> Writer Builder s) -> Parser (IotaEndState, Writer Builder s)
+(+>) t p = fmap (\ x -> (Reparse, p x)) t
 {-# INLINE (+>) #-}
 
-(.>) :: Parser Char -> (Text -> Writer Builder s) -> IotaParser s
-(.>) t p = (fmap p) (fmap singleton t)
+(.>) :: Parser Char -> (Text -> Writer Builder s) -> Parser (IotaEndState, Writer Builder s)
+(.>) t p = fmap ((\ x -> (Reparse, p x)) . T.singleton) t
 {-# INLINE (.>) #-}
 
---(|>) :: (Iota s) => Parser () -> Text -> IotaParser s
---(|>) _ p = return $ tell (fromText p) >> return defaultState
---{-# INLINE (|>) #-}
+(|>) :: Parser IotaEndState -> (Text -> Writer Builder s) -> Parser (IotaEndState, Writer Builder s)
+(|>) t p = fmap (\x -> (x, p T.empty)) t
+{-# INLINE (|>) #-}
 
-endI :: (Iota s) => IotaEndState -> (Text -> Writer Builder s) -> IotaParser s
-endI e p = endOfInput >> failI e p
+endI :: IotaEndState -> Parser IotaEndState
+endI s = endOfInput >> return s
 {-# INLINE endI #-}
 
-failI :: (Iota s) => IotaEndState -> (Text -> Writer Builder s) -> IotaParser s
-failI Reparse p = return $ do
-  x <- p ""
-  let r = runIota x ""
-      r' = closeIota r
-  tell (getBuffer r)
-  tell r'
-  return defaultState
-failI End p = (pure "") +> p
-{-# INLINE failI #-}
+otherwiseI :: Parser IotaEndState
+otherwiseI = return Reparse
+{-# INLINE otherwiseI #-}
 
+---- Repeatedly parse a chunk of text until a partial result is reached
 
--- (|]) :: (Iota s) => t -> (Text -> Writer Builder s) -> IotaParser s
--- (|]) _ p = pure "" +> p
+incrIota :: (Iota s) => (Builder, s, [Text]) -> (Builder, s, [Text])
+incrIota i@(o, s, b:bs) = result
+   where
+     result = case fmap (second runWriter) $ parse (parseIota s) b of
+               Done "" (Terminal, (a, w)) -> (o <> w, a, bs)
+               Done l  (_, (a, w))        -> incrIota (o <> w, a, l:bs)
+               Partial _                  -> case bs of
+                                               b':r -> incrIota (o, s, (b<>b'):r)
+                                               _    -> i
+               Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
+incrIota i = i
 
--- Parse one piece of text producing an attoparsec result
-
-incrIota :: (Iota a) => a -> Text -> (IotaState a, Result (a, Builder))
-incrIota s i = ((s, i), fmap runWriter $ parse (parseIota s) i)
-{-# INLINE incrIota #-}
-
--- Repeatedly parse a chunk of text until a partial result is reached
-
-foldIota :: (Iota a) => (IotaState a, Result (a, Builder)) -> IotaWriter (IotaState a, Text -> Result (a, Builder))
-foldIota = go
-  where
-    --go (t, Done "" (s, b))        = return (s, )
-    go (t, Done leftover (s, b)) = tell b >> go (incrIota s leftover)
-
-    go (t, Fail leftover _ _)    = go $ incrIota defaultState leftover
-    go (t, Partial f)            = return (t, f)
-{-# INLINE foldIota #-}
-
- -- Wrapper around foldIota returning the IotaResult data type
-
-runIota :: (Iota a) => a -> Text -> IotaResult a
-runIota s i =
-    Awaiting buffer next
-  where
-    (next, buffer) = runWriter $ foldIota (incrIota s i)
+runIota :: (Iota a) => a -> Text -> (Builder, a, [Text])
+runIota a i = incrIota (flush, a, [i])
 {-# INLINE runIota #-}
 
 -- Feed additional input
 
-feedIota :: (Iota a) => IotaResult a -> Text -> IotaResult a
-feedIota iotaResult input =
-  case iotaResult of
-    Awaiting buffer ((s, t), next) -> let (n, b) = runWriter $ foldIota ((s, t <> input), next input) in Awaiting b n
-    Complete buffer                -> let (n, b) = runWriter $ foldIota ((defaultState, input), Done input (defaultState, flush)) in Awaiting b n
+feedIota :: (Iota a) => (Builder, a, [Text]) -> Text -> (Builder, a, [Text])
+feedIota (o, a, b) t = incrIota (o, a, b++[t])
 {-# INLINE feedIota #-}
 
 -- Close the parser out returning a final chunk
 
-closeIota :: (Iota a) => IotaResult a -> Builder
-closeIota iotaResult =
-  case iotaResult of
-    Awaiting buffer ((s, t), next) ->
-      case feed (Partial next) "" of
-        Done _ (_, b) -> b
-        _              -> error "Iota parser is not total."
-    Complete buffer                -> flush
-{-# INLINE closeIota #-}
+closeIota :: (Iota a) => (Builder, a, [Text]) -> (Builder, a)
+closeIota (o, s, bs) = 
+  case incrIota (o, s, [T.concat bs]) of
+    (o, s, b) ->
+      case fmap (second runWriter) $ feed (parse (parseIota s) (T.concat b)) "" of
+            Done "" (Terminal, (a, w)) -> (o <> w, a)
+            Done l  (_, (a, w))        -> closeIota (o <> w, a, [l])
+            Partial _                  -> error "Parsers must be total, add parse rules to ensure the parser is total." 
+            Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
 
 -- Simplified parser.
 
-iota :: (Iota a) => a -> Text -> Builder
-iota s t = let f = runIota s t in getBuffer f <> closeIota f
+iota :: (Iota a) => a -> Text -> (Builder, a)
+iota a t = closeIota $ runIota a t
 {-# INLINE iota #-}
