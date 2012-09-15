@@ -7,12 +7,14 @@ module Data.Iota.Text
       -- Operators
     , (.>), (+>), (|>)
       -- Functions
-    , runIota, feedIota, closeIota, iota
+    , initIota, runIota, feedIota, closeIota, iota
     -- Combinators
-    , emitI, bufferI, bufferTextI, emitAndBufferI
+    , emitI
+    , bufferI, bufferTextI
+    , emitAndBufferI, emitAndBufferTextI
     , ignoreI
     , prependI, writeI, appendI
-    , substI
+    , substI, mapI
     , embedInner, feedInner, closeInner
     , endI, otherwiseI
     , IotaEndState(..)
@@ -21,6 +23,7 @@ module Data.Iota.Text
     )
  where
 
+import Prelude
 import Control.Applicative
 import Control.Arrow
 import Control.Monad.Writer.Strict
@@ -38,6 +41,7 @@ instance Show Builder where
 
 class (Show a) => Iota a where
   parseIota :: a -> Parser (IotaEndState, Writer Builder a)
+  initState :: a
 
 data IotaEndState = Terminal | Reparse
   deriving (Show)
@@ -56,9 +60,13 @@ bufferTextI :: (Text -> s) -> Text -> Writer Builder s
 bufferTextI s t = return (s t)
 {-# INLINE bufferTextI #-}
 
-emitAndBufferI :: (Text -> s) -> Text -> Writer Builder s
-emitAndBufferI s t = tell (fromText t) >> return (s t)
+emitAndBufferI :: (Builder -> s) -> Text -> Writer Builder s
+emitAndBufferI s t = tell (fromText t) >> return (s $ fromText t)
 {-# INLINE emitAndBufferI #-}
+
+emitAndBufferTextI :: (Text -> s) -> Text -> Writer Builder s
+emitAndBufferTextI s t = tell (fromText t) >> return (s t)
+{-# INLINE emitAndBufferTextI #-}
 
 ignoreI :: s -> Text -> Writer Builder s
 ignoreI s _ = return s
@@ -77,8 +85,12 @@ appendI b s t = tell (fromText (t <> b)) >> return s
 {-# INLINE appendI #-}
 
 substI :: (Show s) => Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
-substI c f = const (f c)
+substI b s = const (s b)
 {-# INLINE substI #-}
+
+mapI :: (Show s) => (Text -> Text) -> (Text -> Writer Builder s) -> Text -> Writer Builder s
+mapI m s = s . m
+{-# INLINE mapI #-}
 
 embedInner :: (Iota b) => b -> (IotaResult b -> s) -> Text -> Writer Builder s
 embedInner i s t = tell o >> return (s (flush, a, b))
@@ -133,6 +145,10 @@ runIota :: (Iota a) => a -> Text -> (Builder, a, [Text])
 runIota a i = incrIota (flush, a, [i])
 {-# INLINE runIota #-}
 
+initIota :: (Iota a) => (Builder, a, [Text])
+initIota = runIota initState ""
+{-# INLINE initIota #-}
+
 -- Feed additional input
 
 feedIota :: (Iota a) => (Builder, a, [Text]) -> Text -> (Builder, a, [Text])
@@ -142,13 +158,13 @@ feedIota (o, a, b) t = incrIota (o, a, b++[t])
 -- Close the parser out returning a final chunk
 
 closeIota :: (Iota a) => (Builder, a, [Text]) -> (Builder, a)
-closeIota (o, s, bs) = 
+closeIota (o, s, bs) =
   case incrIota (o, s, [T.concat bs]) of
     (o, s, b) ->
       case fmap (second runWriter) $ feed (parse (parseIota s) (T.concat b)) "" of
             Done "" (Terminal, (a, w)) -> (o <> w, a)
             Done l  (_, (a, w))        -> closeIota (o <> w, a, [l])
-            Partial _                  -> error "Parsers must be total, add parse rules to ensure the parser is total." 
+            Partial _                  -> error "Parsers must be total, add parse rules to ensure the parser is total."
             Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
 
 -- Simplified parser.
