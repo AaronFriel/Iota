@@ -14,6 +14,7 @@ module Data.Iota.Text
     , emitAndBufferI, emitAndBufferTextI
     , ignoreI
     , prependI, writeI, appendI
+    , prependTextI, writeTextI, appendTextI
     , substI, mapI
     , embedInner, feedInner, closeInner
     , endI, otherwiseI
@@ -72,21 +73,33 @@ ignoreI :: s -> Text -> Writer Builder s
 ignoreI s _ = return s
 {-# INLINE ignoreI #-}
 
-prependI :: Builder -> s -> Text -> Writer Builder s
-prependI b s t = tell (b <> fromText t) >> return s
-{-# INLINE prependI #-}
+prependTextI :: Text -> s -> Text -> Writer Builder s
+prependTextI b s t = tell (fromText b <> fromText t) >> return s
+{-# INLINE prependTextI #-}
 
-writeI :: Text -> s -> Text -> Writer Builder s
-writeI b s _ = tell (fromText b) >> return s
-{-# INLINE writeI #-}
+writeTextI :: Text -> s -> Text -> Writer Builder s
+writeTextI b s _ = tell (fromText b) >> return s
+{-# INLINE writeTextI #-}
 
-appendI :: Text -> s -> Text -> Writer Builder s
-appendI b s t = tell (fromText (t <> b)) >> return s
-{-# INLINE appendI #-}
+appendTextI :: Text -> s -> Text -> Writer Builder s
+appendTextI b s t = tell (fromText t <> fromText b) >> return s
+{-# INLINE appendTextI #-}
 
 substI :: (Show s) => Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 substI b s = const (s b)
 {-# INLINE substI #-}
+
+prependI :: Builder -> s -> Text -> Writer Builder s
+prependI b s t = tell (b <> fromText t) >> return s
+{-# INLINE prependI #-}
+
+writeI :: Builder -> s -> Text -> Writer Builder s
+writeI b s _ = tell b >> return s
+{-# INLINE writeI #-}
+
+appendI :: Builder -> s -> Text -> Writer Builder s
+appendI b s t = tell (fromText t <> b) >> return s
+{-# INLINE appendI #-}
 
 mapI :: (Show s) => (Text -> Text) -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 mapI m s = s . m
