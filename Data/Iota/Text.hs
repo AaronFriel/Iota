@@ -20,7 +20,7 @@ module Data.Iota.Text
     , endI, otherwiseI
     , IotaEndState(..)
     -- Exports
-    , (<|>)
+    , module Data.Attoparsec.Text
     )
  where
 
