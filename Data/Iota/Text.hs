@@ -40,7 +40,7 @@ import Blaze.ByteString.Builder.Char.Utf8
 instance Show Builder where
   show = show . toByteString
 
-class (Show a) => Iota a where
+class Iota a where
   parseIota :: a -> Parser (IotaEndState, Writer Builder a)
   initState :: a
 
