@@ -16,7 +16,7 @@ module Data.Iota.Text
     , prependI, writeI, appendI
     , prependTextI, writeTextI, appendTextI
     , substI, mapI
-    , embedInner, feedInner, closeInner
+    , feedInner, closeInner
     , endI, otherwiseI
     , IotaEndState(..)
     -- Exports
@@ -104,11 +104,6 @@ appendI b s t = tell (fromText t <> b) >> return s
 mapI :: (Show s) => (Text -> Text) -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 mapI m s = s . m
 {-# INLINE mapI #-}
-
-embedInner :: (Iota b) => b -> (IotaResult b -> s) -> Text -> Writer Builder s
-embedInner i s t = tell o >> return (s (flush, a, b))
-  where (o, a, b) = runIota i t
-{-# INLINE embedInner #-}
 
 feedInner :: (Iota b) => IotaResult b -> (IotaResult b -> s) -> Text -> Writer Builder s
 feedInner i s t = tell o >> return (s (flush, a, b))
