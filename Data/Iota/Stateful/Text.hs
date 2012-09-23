@@ -17,7 +17,6 @@ module Data.Iota.Stateful.Text
  where
 
 import Prelude
-import Control.Applicative
 import Control.Arrow
 import Control.Monad.Writer.Strict
 import Data.Attoparsec.Text
@@ -50,11 +49,11 @@ closeInnerS i s t = tell o >> tell (fromText t) >> return s
 {-# INLINE closeInnerS #-}
 
 (+>=) :: Parser Text -> (Text -> Writer Builder (a, b -> b)) -> Parser (IotaEndState, Writer Builder (a, b -> b))
-(+>=) t p = fmap (\ x -> (Reparse, p x)) t
+(+>=) t p = fmap (\x -> (Reparse, p x)) t
 {-# INLINE (+>=) #-}
 
 (.>=) :: Parser Char -> (Text -> Writer Builder (a, b -> b)) -> Parser (IotaEndState, Writer Builder (a, b -> b))
-(.>=) t p = fmap ((\ x -> (Reparse, p x)) . T.singleton) t
+(.>=) t p = fmap ((\x -> (Reparse, p x)) . T.singleton) t
 {-# INLINE (.>=) #-}
 
 (|>=) :: Parser IotaEndState -> (Text -> Writer Builder (a, b -> b)) -> Parser (IotaEndState, Writer Builder (a, b -> b))
@@ -62,11 +61,11 @@ closeInnerS i s t = tell o >> tell (fromText t) >> return s
 {-# INLINE (|>=) #-}
 
 (+>>) :: Parser Text -> (Text -> Writer Builder a) -> Parser (IotaEndState, Writer Builder (a, b -> b))
-(+>>) t p = fmap (\ x -> (Reparse, fmap (\a -> (a, id)) (p x))) t
+(+>>) t p = fmap (\x -> (Reparse, fmap (\a -> (a, id)) (p x))) t
 {-# INLINE (+>>) #-}
 
 (.>>) :: Parser Char -> (Text -> Writer Builder a) -> Parser (IotaEndState, Writer Builder (a, b -> b))
-(.>>) t p = fmap ((\x -> (Reparse, fmap (\a -> (a, id)) (p $ T.singleton x)))) t
+(.>>) t p = fmap (\x -> (Reparse, fmap (\a -> (a, id)) (p $ T.singleton x))) t
 {-# INLINE (.>>) #-}
 
 (|>>) :: Parser IotaEndState -> (Text -> Writer Builder a) -> Parser (IotaEndState, Writer Builder (a, b -> b))
@@ -79,13 +78,14 @@ incrIota :: (IotaS a b) => IotaResultS a b -> IotaResultS a b
 incrIota i@(o, a, b, t:ts) = result
    where
      result = case fmap (second runWriter) $ parse (parseIotaS a b) t of
-               Done "" (Terminal, ((a, f), w)) -> (o <> w, a, f b, ts)
-               Done l  (_, ((a, f), w))        -> incrIota (o <> w, a, f b, l:ts)
+               Done "" (Terminal, ((a', f), w)) -> (o <> w, a', f b, ts)
+               Done l  (_, ((a', f), w))        -> incrIota (o <> w, a', f b, l:ts)
                Partial _                  -> case ts of
                                                t':r -> incrIota (o, a, b, (t<>t'):r)
                                                _    -> i
                Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
 incrIota i = i
+{-# INLINE incrIota #-}
 
 runIotaS :: (IotaS a b) => (a, b) -> Text -> IotaResultS a b
 runIotaS (a, b) i = incrIota (flush, a, b, [i])
@@ -106,12 +106,13 @@ feedIotaS (o, a, b, t) t' = incrIota (o, a, b, t++[t'])
 closeIotaS :: (IotaS a b) => IotaResultS a b -> (Builder, a, b)
 closeIotaS (o, a, b, ts) =
   case incrIota (o, a, b, [T.concat ts]) of
-    (o, a, b, t) ->
-      case fmap (second runWriter) $ feed (parse (parseIotaS a b) (T.concat t)) "" of
-            Done "" (Terminal, ((a, f), w)) -> (o <> w, a, f b)
-            Done l  (_, ((a, f), w))        -> closeIotaS (o <> w, a, f b, [l])
+    (o', a', b', t) ->
+      case fmap (second runWriter) $ feed (parse (parseIotaS a' b') (T.concat t)) "" of
+            Done "" (Terminal, ((a'', f), w)) -> (o' <> w, a'', f b)
+            Done l  (_, ((a'', f), w))        -> closeIotaS (o' <> w, a'', f b, [l])
             Partial _                  -> error "Parsers must be total, add parse rules to ensure the parser is total."
             Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
+{-# INLINE closeIotaS #-}
 
 -- Simplified parser.
 

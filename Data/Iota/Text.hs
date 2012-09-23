@@ -25,7 +25,6 @@ module Data.Iota.Text
  where
 
 import Prelude
-import Control.Applicative
 import Control.Arrow
 import Control.Monad.Writer.Strict
 import Data.Attoparsec.Text
@@ -37,15 +36,11 @@ import Blaze.ByteString.Builder.Char.Utf8
 
 -- Iota is an incremental, buffered parser library
 
-instance Show Builder where
-  show = show . toByteString
-
 class Iota a where
   parseIota :: a -> Parser (IotaEndState, Writer Builder a)
   initState :: a
 
 data IotaEndState = Terminal | Reparse
-  deriving (Show)
 
 type IotaResult a = (Builder, a, [Text])
 
@@ -85,7 +80,7 @@ appendTextI :: Text -> s -> Text -> Writer Builder s
 appendTextI b s t = tell (fromText t <> fromText b) >> return s
 {-# INLINE appendTextI #-}
 
-substI :: (Show s) => Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
+substI :: Text -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 substI b s = const (s b)
 {-# INLINE substI #-}
 
@@ -101,7 +96,7 @@ appendI :: Builder -> s -> Text -> Writer Builder s
 appendI b s t = tell (fromText t <> b) >> return s
 {-# INLINE appendI #-}
 
-mapI :: (Show s) => (Text -> Text) -> (Text -> Writer Builder s) -> Text -> Writer Builder s
+mapI :: (Text -> Text) -> (Text -> Writer Builder s) -> Text -> Writer Builder s
 mapI m s = s . m
 {-# INLINE mapI #-}
 
@@ -148,6 +143,8 @@ incrIota i@(o, s, b:bs) = result
                                                _    -> i
                Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
 incrIota i = i
+{-# INLINE incrIota #-}
+
 
 runIota :: (Iota a) => a -> Text -> (Builder, a, [Text])
 runIota a i = incrIota (flush, a, [i])
@@ -168,12 +165,14 @@ feedIota (o, a, b) t = incrIota (o, a, b++[t])
 closeIota :: (Iota a) => (Builder, a, [Text]) -> (Builder, a)
 closeIota (o, s, bs) =
   case incrIota (o, s, [T.concat bs]) of
-    (o, s, b) ->
-      case fmap (second runWriter) $ feed (parse (parseIota s) (T.concat b)) "" of
-            Done "" (Terminal, (a, w)) -> (o <> w, a)
-            Done l  (_, (a, w))        -> closeIota (o <> w, a, [l])
+    (o', s', b) ->
+      case fmap (second runWriter) $ feed (parse (parseIota s') (T.concat b)) "" of
+            Done "" (Terminal, (a, w)) -> (o' <> w, a)
+            Done l  (_, (a, w))        -> closeIota (o' <> w, a, [l])
             Partial _                  -> error "Parsers must be total, add parse rules to ensure the parser is total."
             Fail {}                    -> error "Parsers must be total, add parse rules to ensure the parser is total."
+{-# INLINE closeIota #-}
+
 
 -- Simplified parser.
 
