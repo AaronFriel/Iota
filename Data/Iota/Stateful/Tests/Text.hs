@@ -1,11 +1,11 @@
 {-# LANGUAGE OverloadedStrings, MultiParamTypeClasses, FlexibleInstances #-}
-module Data.Iota.Tests.Text
+module Data.Iota.Stateful.Tests.Text
  where
 
 import Blaze.ByteString.Builder
 import Blaze.ByteString.Builder.Internal.Buffer
 import Data.Attoparsec.Text
-import Data.Iota.Monad.Text
+import Data.Iota.Stateful.Text
 import Data.Functor.Identity
 import Control.Monad.Identity
 import Control.Applicative
@@ -22,39 +22,36 @@ data CParserTest = CData
                  | CLineComment
   deriving (Show)
 
-instance (Show a) => Show (Identity a) where
-  show = show . runIdentity
-
 -- This instance counts the number of characters emitted.
-instance IotaM CParserTest Identity Int where
-  initStateM = (CData, Identity 0)
+instance IotaS CParserTest Int where
+  initStateS = (CData, 0)
 
   -- example of special behavior:
-  parseIotaM CData (Identity 10) =
-        anyChar       .>= writeTextI "/*ten*/" (CData, return . (+3))
+  parseIotaS CData 10 =
+        anyChar       .>= writeTextI "/*ten*/" (CData, (+3))
     <|> endI Terminal |>> writeTextI "/*ten*/" CData
 
-  parseIotaM CData _ =
+  parseIotaS CData _ =
         char '/'      .>> bufferI CForwardSlash
-    <|> anyChar       .>= emitI (CData, return . (+1))
+    <|> anyChar       .>= emitI (CData, (+1))
     <|> endI Terminal |>> ignoreI CData
 
-  parseIotaM (CForwardSlash buffer) _ =
+  parseIotaS (CForwardSlash buffer) _ =
         char '*'      .>> ignoreI CBlockComment
     <|> char '/'      .>> ignoreI CLineComment
-    <|> otherwiseI    |>= prependI buffer (CData, return . (+1))
+    <|> otherwiseI    |>= prependI buffer (CData, (+1))
 
-  parseIotaM CBlockComment _ =
+  parseIotaS CBlockComment _ =
         char '*'      .>> ignoreI CBlockCommentAsterisk
     <|> anyChar       .>> ignoreI CBlockComment
     <|> otherwiseI    |>> ignoreI CData
 
-  parseIotaM CBlockCommentAsterisk _ =
+  parseIotaS CBlockCommentAsterisk _ =
         char '/'      .>> ignoreI CData
     <|> anyChar       .>> ignoreI CBlockComment
     <|> otherwiseI    |>> ignoreI CData
 
-  parseIotaM CLineComment _ =
+  parseIotaS CLineComment _ =
         string "\r\n" +>> emitI CData
     <|> char   '\n'   .>> emitI CData
     <|> anyChar       .>> ignoreI CLineComment
@@ -63,40 +60,40 @@ instance IotaM CParserTest Identity Int where
 data HaskellParserTest = HData
                        | HBlockComment HaskellParserTest
                        | HLineComment HaskellParserTest
-                       | HQuotedC (IotaResultM CParserTest Identity Int)
+                       | HQuotedC (IotaResultS CParserTest Int)
   deriving (Show)
 
-instance (Monoid a) => IotaM HaskellParserTest Identity a where
-  initStateM = (HData, Identity mempty)
+instance IotaS HaskellParserTest [Text] where
+  initStateS = (HData, ["Data"])
 
-  parseIotaM HData _ =
-        string "--"   +>> ignoreI (HLineComment HData)
-    <|> string "{-"   +>> ignoreI (HBlockComment HData)
-    <|> string "[C|"  +>> emitI (HQuotedC initIotaM)
+  parseIotaS HData _ =
+        string "--"   +>= ignoreI (HLineComment HData, ("Line Comment" :))
+    <|> string "{-"   +>= ignoreI (HBlockComment HData, ("Block Comment" :))
+    <|> string "[C|"  +>= emitI (HQuotedC initIotaS, ("Quoted C" :))
     <|> anyChar       .>> emitI HData
-    <|> endI Terminal |>> ignoreI HData
+    <|> endI Terminal |>= ignoreI (HData, ("End" :))
 
-  parseIotaM (HBlockComment prior) _ =
-        string "-}"   +>> ignoreI prior
+  parseIotaS (HBlockComment prior) _ =
+        string "-}"   +>= ignoreI (prior, ("Data" :))
     <|> anyChar       .>> ignoreI (HBlockComment prior)
     <|> endI Reparse  |>> ignoreI prior
 
-  parseIotaM (HLineComment prior) _ =
-        string "\r\n" +>> emitI prior
-    <|> char   '\n'   .>> emitI prior
+  parseIotaS (HLineComment prior) _ =
+        string "\r\n" +>= emitI (prior, ("Data" :))
+    <|> char   '\n'   .>= emitI (prior, ("Data" :))
     <|> anyChar       .>> ignoreI (HLineComment prior)
     <|> endI Reparse  |>> ignoreI prior
 
-  parseIotaM p@(HQuotedC cparser) _ =
-        string "\\]"  +>> substI "]" (feedInnerM cparser HQuotedC)
-    <|> string "{-"   +>> ignoreI (HBlockComment p)
-    <|> string "--"   +>> ignoreI (HLineComment p)
-    <|> char ']'      .>> closeInnerM cparser HData
-    <|> anyChar       .>> feedInnerM cparser HQuotedC
-    <|> endI Reparse  |>> substI "]" (closeInnerM cparser HData)
+  parseIotaS p@(HQuotedC cparser) _ =
+        string "\\]"  +>> substI "]" (feedInnerS cparser HQuotedC)
+    <|> string "{-"   +>= ignoreI (HBlockComment p, ("Block Comment" :))
+    <|> string "--"   +>= ignoreI (HLineComment p, ("Line Comment" :))
+    <|> char ']'      .>= closeInnerS cparser (HData, ("Data" :))
+    <|> anyChar       .>> feedInnerS cparser HQuotedC
+    <|> endI Reparse  |>> substI "]" (closeInnerS cparser HData)
 
-type HaskellParser a = (HaskellParserTest, Identity a)
+type HaskellParser = (HaskellParserTest, [Text])
 
 main = do
   x <- T.getLine
-  print $ iotaM (initStateM :: HaskellParser String) x
+  print $ iotaS (initStateS :: HaskellParser) x
